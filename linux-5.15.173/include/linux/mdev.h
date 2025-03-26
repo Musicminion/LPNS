@@ -10,6 +10,10 @@
 #ifndef MDEV_H
 #define MDEV_H
 
+#include <linux/device.h>
+#include <linux/uuid.h>  // 添加这一行以包含 guid_t 的定义
+#include <linux/list.h>
+
 struct mdev_type;
 
 struct mdev_device {

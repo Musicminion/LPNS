@@ -172,6 +172,7 @@ enum vfio_notify_type {
 
 /* events for VFIO_IOMMU_NOTIFY */
 #define VFIO_IOMMU_NOTIFY_DMA_UNMAP	BIT(0)
+#define VFIO_IOMMU_NOTIFY_DMA_MAP	BIT(1)
 
 /* events for VFIO_GROUP_NOTIFY */
 #define VFIO_GROUP_NOTIFY_SET_KVM	BIT(0)

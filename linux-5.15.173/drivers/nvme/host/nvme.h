@@ -232,6 +232,7 @@ static inline u16 nvme_req_qid(struct request *req)
 enum nvme_ctrl_state {
 	NVME_CTRL_NEW,
 	NVME_CTRL_LIVE,
+	NVME_CTRL_SUSPENDED,
 	NVME_CTRL_RESETTING,
 	NVME_CTRL_CONNECTING,
 	NVME_CTRL_DELETING,
@@ -249,6 +250,7 @@ struct nvme_fault_inject {
 };
 
 struct nvme_ctrl {
+	struct list_head link;
 	bool comp_seen;
 	enum nvme_ctrl_state state;
 	bool identified;
@@ -288,6 +290,7 @@ struct nvme_ctrl {
 	u32 queue_count;
 
 	u64 cap;
+	u32 page_size;
 	u32 max_hw_sectors;
 	u32 max_segments;
 	u32 max_integrity_segments;
@@ -368,6 +371,78 @@ struct nvme_ctrl {
 	unsigned long discard_page_busy;
 
 	struct nvme_fault_inject fault_inject;
+};
+
+#ifdef CONFIG_NVME_MDEV
+/* Interface to the host driver  */
+struct nvme_mdev_driver {
+	struct module *owner;
+
+	/* a controller state has changed*/
+	void (*nvme_ctrl_state_changed)(struct nvme_ctrl *ctrl);
+
+	/* NS is updated in some way (after format or so) */
+	void (*nvme_ns_state_changed)(struct nvme_ctrl *ctrl,
+				      u32 nsid, bool removed);
+};
+
+int nvme_core_register_mdev_driver(struct nvme_mdev_driver *driver_ops);
+void nvme_core_unregister_mdev_driver(struct nvme_mdev_driver *driver_ops);
+#endif
+
+/*
+ * Represents an NVM Express device.  Each nvme_dev is a PCI function.
+ */
+struct nvme_dev {
+	struct nvme_queue *queues;
+	struct blk_mq_tag_set tagset;
+	struct blk_mq_tag_set admin_tagset;
+	u32 __iomem *dbs;
+	struct device *dev;
+	struct dma_pool *prp_page_pool;
+	struct dma_pool *prp_small_pool;
+	unsigned online_queues;
+	unsigned max_qid;
+	unsigned io_queues[HCTX_MAX_TYPES];
+	unsigned int mdev_queues;
+	unsigned int num_vecs;
+	int q_depth;
+	int io_sqes;
+	u32 db_stride;
+	void __iomem *bar;
+	unsigned long bar_mapped_size;
+	struct work_struct remove_work;
+	struct mutex shutdown_lock;
+	struct mutex ext_dev_lock;
+	bool subsystem;
+	u64 cmb_size;
+	bool cmb_use_sqes;
+	u32 cmbsz;
+	u32 cmbloc;
+	struct nvme_ctrl ctrl;
+	u32 last_ps;
+	bool hmb;
+
+	mempool_t *iod_mempool;
+
+	/* shadow doorbell buffer support: */
+	u32 *dbbuf_dbs;
+	dma_addr_t dbbuf_dbs_dma_addr;
+	u32 *dbbuf_eis;
+	dma_addr_t dbbuf_eis_dma_addr;
+
+	/* host memory buffer support: */
+	u64 host_mem_size;
+	u32 nr_host_mem_descs;
+	dma_addr_t host_mem_descs_dma;
+	struct nvme_host_mem_buf_desc *host_mem_descs;
+	void **host_mem_desc_bufs;
+
+	unsigned int nr_allocated_queues;
+	unsigned int nr_write_queues;
+	unsigned int nr_poll_queues;
+
+	bool attrs_added;
 };
 
 static inline enum nvme_ctrl_state nvme_ctrl_state(struct nvme_ctrl *ctrl)
@@ -470,6 +545,7 @@ struct nvme_ns {
 	u32 ana_grpid;
 #endif
 	struct list_head siblings;
+	struct nvm_dev *ndev;
 	struct kref kref;
 	struct nvme_ns_head *head;
 
@@ -477,6 +553,7 @@ struct nvme_ns {
 	u16 ms;
 	u16 sgs;
 	u32 sws;
+	bool ext;
 	u8 pi_type;
 #ifdef CONFIG_BLK_DEV_ZONED
 	u64 zsze;
@@ -488,6 +565,7 @@ struct nvme_ns {
 #define NVME_NS_ANA_PENDING	2
 #define NVME_NS_FORCE_RO	3
 #define NVME_NS_READY		4
+	u16 noiob;
 
 	struct cdev		cdev;
 	struct device		cdev_device;
@@ -502,6 +580,12 @@ static inline bool nvme_ns_has_pi(struct nvme_ns *ns)
 	return ns->pi_type && ns->ms == sizeof(struct t10_pi_tuple);
 }
 
+struct nvme_ext_data_iter;
+struct nvme_ext_cmd_result {
+	u64 tag;
+	u16 status;
+};
+
 struct nvme_ctrl_ops {
 	const char *name;
 	struct module *module;
@@ -509,6 +593,8 @@ struct nvme_ctrl_ops {
 #define NVME_F_FABRICS			(1 << 0)
 #define NVME_F_METADATA_SUPPORTED	(1 << 1)
 #define NVME_F_PCI_P2PDMA		(1 << 2)
+#define NVME_F_MDEV_SUPPORTED		(1 << 3)
+#define NVME_F_MDEV_DMA_SUPPORTED	(1 << 4)
 	int (*reg_read32)(struct nvme_ctrl *ctrl, u32 off, u32 *val);
 	int (*reg_write32)(struct nvme_ctrl *ctrl, u32 off, u32 val);
 	int (*reg_read64)(struct nvme_ctrl *ctrl, u32 off, u64 *val);
@@ -517,6 +603,24 @@ struct nvme_ctrl_ops {
 	void (*delete_ctrl)(struct nvme_ctrl *ctrl);
 	void (*stop_ctrl)(struct nvme_ctrl *ctrl);
 	int (*get_address)(struct nvme_ctrl *ctrl, char *buf, int size);
+
+#ifdef CONFIG_NVME_MDEV
+	int (*ext_queues_available)(struct nvme_ctrl *ctrl);
+	int (*ext_queues_total)(struct nvme_ctrl *ctrl);
+	int (*ext_queue_alloc)(struct nvme_ctrl *ctrl, u16 *qid);
+	void (*ext_queue_free)(struct nvme_ctrl *ctrl, u16 qid);
+
+	int (*ext_queue_submit)(struct nvme_ctrl *ctrl,
+				u16 qid, u64 tag,
+				struct nvme_command *command,
+				struct nvme_ext_data_iter *iter);
+
+	bool (*ext_queue_full)(struct nvme_ctrl *ctrl, u16 qid);
+
+	int (*ext_queue_poll)(struct nvme_ctrl *ctrl, u16 qid,
+			      struct nvme_ext_cmd_result *results,
+			      unsigned int max_len);
+#endif
 };
 
 /*

@@ -1,0 +1,18 @@
+{
+    "files.associations": {
+        "priv.h": "c",
+        "device.h": "c",
+        "nvme.h": "c",
+        "cdev.h": "c",
+        "memory": "c",
+        "*.tcc": "cpp",
+        "chrono": "cpp",
+        "string_view": "cpp",
+        "typeinfo": "c",
+        "ratio": "c",
+        "mdev.h": "c",
+        "vfio_ccw_private.h": "c",
+        "vfio_ccw.h": "c",
+        "vfio.h": "c"
+    }
+}

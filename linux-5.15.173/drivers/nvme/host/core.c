@@ -118,6 +118,106 @@ static void nvme_remove_invalid_namespaces(struct nvme_ctrl *ctrl,
 static void nvme_update_keep_alive(struct nvme_ctrl *ctrl,
 				   struct nvme_command *cmd);
 
+
+// 增加的代码
+#ifdef CONFIG_NVME_MDEV
+static struct nvme_mdev_driver *mdev_driver_interface;
+static DEFINE_MUTEX(mdev_ctrl_lock);
+static LIST_HEAD(mdev_ctrl_list);
+
+static bool nvme_ctrl_has_mdev(struct nvme_ctrl *ctrl)
+{
+	return  (ctrl->ops->flags & NVME_F_MDEV_SUPPORTED) != 0;
+}
+
+static void nvme_mdev_add_ctrl(struct nvme_ctrl *ctrl)
+{
+	if (nvme_ctrl_has_mdev(ctrl)) {
+		mutex_lock(&mdev_ctrl_lock);
+		list_add_tail(&ctrl->link, &mdev_ctrl_list);
+		mutex_unlock(&mdev_ctrl_lock);
+	}
+}
+
+static void nvme_mdev_remove_ctrl(struct nvme_ctrl *ctrl)
+{
+	if (nvme_ctrl_has_mdev(ctrl)) {
+		mutex_lock(&mdev_ctrl_lock);
+		list_del_init(&ctrl->link);
+		mutex_unlock(&mdev_ctrl_lock);
+	}
+}
+
+int nvme_core_register_mdev_driver(struct nvme_mdev_driver *driver_ops)
+{
+	struct nvme_ctrl *ctrl;
+
+	if (mdev_driver_interface)
+		return -EEXIST;
+
+	mdev_driver_interface = driver_ops;
+
+	mutex_lock(&mdev_ctrl_lock);
+	list_for_each_entry(ctrl, &mdev_ctrl_list, link)
+		mdev_driver_interface->nvme_ctrl_state_changed(ctrl);
+
+	mutex_unlock(&mdev_ctrl_lock);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(nvme_core_register_mdev_driver);
+
+void nvme_core_unregister_mdev_driver(struct nvme_mdev_driver *driver_ops)
+{
+	if (WARN_ON(driver_ops != mdev_driver_interface))
+		return;
+	mdev_driver_interface = NULL;
+}
+EXPORT_SYMBOL_GPL(nvme_core_unregister_mdev_driver);
+
+static void nvme_mdev_ctrl_state_changed(struct nvme_ctrl *ctrl)
+{
+	if (!mdev_driver_interface || !nvme_ctrl_has_mdev(ctrl))
+		return;
+	if (!try_module_get(mdev_driver_interface->owner))
+		return;
+
+	mdev_driver_interface->nvme_ctrl_state_changed(ctrl);
+	module_put(mdev_driver_interface->owner);
+}
+
+static void nvme_mdev_ns_state_changed(struct nvme_ctrl *ctrl,
+				       struct nvme_ns *ns, bool removed)
+{
+	if (!mdev_driver_interface || !nvme_ctrl_has_mdev(ctrl))
+		return;
+	if (!try_module_get(mdev_driver_interface->owner))
+		return;
+
+	mdev_driver_interface->nvme_ns_state_changed(ctrl,
+			ns->head->ns_id, removed);
+	module_put(mdev_driver_interface->owner);
+}
+
+#else
+static void nvme_mdev_ctrl_state_changed(struct nvme_ctrl *ctrl)
+{
+}
+
+static void nvme_mdev_ns_state_changed(struct nvme_ctrl *ctrl,
+				       struct nvme_ns *ns, bool removed)
+{
+}
+
+static void nvme_mdev_add_ctrl(struct nvme_ctrl *ctrl)
+{
+}
+
+static void nvme_mdev_remove_ctrl(struct nvme_ctrl *ctrl)
+{
+}
+#endif
+
+
 /*
  * Prepare a queue for teardown.
  *
@@ -447,8 +547,21 @@ bool nvme_change_ctrl_state(struct nvme_ctrl *ctrl,
 		case NVME_CTRL_NEW:
 		case NVME_CTRL_RESETTING:
 		case NVME_CTRL_CONNECTING:
+		case NVME_CTRL_SUSPENDED:
 			changed = true;
 			fallthrough;
+		default:
+			break;
+		}
+		break;
+	case NVME_CTRL_SUSPENDED:
+		switch (old_state) {
+		case NVME_CTRL_NEW:
+		case NVME_CTRL_LIVE:
+		case NVME_CTRL_RESETTING:
+		case NVME_CTRL_CONNECTING:
+			changed = true;
+			/* FALLTHRU */
 		default:
 			break;
 		}
@@ -457,6 +570,7 @@ bool nvme_change_ctrl_state(struct nvme_ctrl *ctrl,
 		switch (old_state) {
 		case NVME_CTRL_NEW:
 		case NVME_CTRL_LIVE:
+		case NVME_CTRL_SUSPENDED:
 			changed = true;
 			fallthrough;
 		default:
@@ -478,6 +592,7 @@ bool nvme_change_ctrl_state(struct nvme_ctrl *ctrl,
 		case NVME_CTRL_LIVE:
 		case NVME_CTRL_RESETTING:
 		case NVME_CTRL_CONNECTING:
+		case NVME_CTRL_SUSPENDED:
 			changed = true;
 			fallthrough;
 		default:
@@ -513,6 +628,9 @@ bool nvme_change_ctrl_state(struct nvme_ctrl *ctrl,
 	}
 
 	spin_unlock_irqrestore(&ctrl->lock, flags);
+
+	nvme_mdev_ctrl_state_changed(ctrl);
+
 	if (!changed)
 		return false;
 
@@ -1186,6 +1304,13 @@ static u32 nvme_passthru_start(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	return effects;
 }
 
+static void nvme_update_ns(struct nvme_ctrl *ctrl, struct nvme_ns *ns)
+{
+	nvme_mdev_ns_state_changed(ctrl, ns, false);
+}
+
+
+// 感觉这里不太好移植
 static void nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
 			      struct nvme_command *cmd, int status)
 {
@@ -3957,6 +4082,8 @@ static void nvme_ns_remove(struct nvme_ns *ns)
 	if (test_and_set_bit(NVME_NS_REMOVING, &ns->flags))
 		return;
 
+	nvme_mdev_ns_state_changed(ns->ctrl, ns, true);
+
 	clear_bit(NVME_NS_READY, &ns->flags);
 	set_capacity(ns->disk, 0);
 	nvme_fault_inject_fini(&ns->fault_inject);
@@ -4535,6 +4662,7 @@ static void nvme_free_ctrl(struct device *dev)
 		mutex_unlock(&nvme_subsystems_lock);
 	}
 
+	nvme_mdev_remove_ctrl(ctrl);
 	ctrl->ops->free_ctrl(ctrl);
 
 	if (subsys)
@@ -4544,7 +4672,7 @@ static void nvme_free_ctrl(struct device *dev)
 /*
  * Initialize a NVMe controller structures.  This needs to be called during
  * earliest initialization so that we have the initialized structured around
- * during probing.
+ * during probing. 
  */
 int nvme_init_ctrl(struct nvme_ctrl *ctrl, struct device *dev,
 		const struct nvme_ctrl_ops *ops, unsigned long quirks)
@@ -4613,6 +4741,8 @@ int nvme_init_ctrl(struct nvme_ctrl *ctrl, struct device *dev,
 	ctrl->device->power.set_latency_tolerance = nvme_set_latency_tolerance;
 	dev_pm_qos_update_user_latency_tolerance(ctrl->device,
 		min(default_ps_max_latency_us, (unsigned long)S32_MAX));
+
+	nvme_mdev_add_ctrl(ctrl);
 
 	nvme_fault_inject_init(&ctrl->fault_inject, dev_name(ctrl->device));
 	nvme_mpath_init_ctrl(ctrl);

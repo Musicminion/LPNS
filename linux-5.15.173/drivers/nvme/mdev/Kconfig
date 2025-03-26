@@ -1,0 +1,16 @@
+
+config NVME_MDEV
+	bool
+
+config NVME_MDEV_VFIO
+	tristate "NVME Mediated VFIO virtual device"
+	select NVME_MDEV
+	depends on BLOCK
+	depends on VFIO_MDEV
+	depends on NVME_CORE
+	help
+	  This provides EXPEREMENTAL support for lightweight software
+	  passthrough of an partition on a NVME storage device to
+	  guest, also as a NVME namespace, attached to a virtual NVME
+	  controller
+	  If unsure, say N.
