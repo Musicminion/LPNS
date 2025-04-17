@@ -541,6 +541,10 @@ bool nvme_change_ctrl_state(struct nvme_ctrl *ctrl,
 	spin_lock_irqsave(&ctrl->lock, flags);
 
 	old_state = ctrl->state;
+
+	// log
+	pr_info("[nvme: func]nvme_change_ctrl_state: old_state=%d, new_state=%d\n", old_state, new_state);
+
 	switch (new_state) {
 	case NVME_CTRL_LIVE:
 		switch (old_state) {
@@ -2296,12 +2300,18 @@ static const struct block_device_operations nvme_bdev_ops = {
 
 static int nvme_wait_ready(struct nvme_ctrl *ctrl, u64 cap, bool enabled)
 {
+	dev_info(ctrl->device, "waiting for device to be %s\n",
+		 enabled ? "ready" : "not ready");
+	
 	unsigned long timeout =
 		((NVME_CAP_TIMEOUT(cap) + 1) * HZ / 2) + jiffies;
 	u32 csts, bit = enabled ? NVME_CSTS_RDY : 0;
 	int ret;
 
 	while ((ret = ctrl->ops->reg_read32(ctrl, NVME_REG_CSTS, &csts)) == 0) {
+		
+		dev_info(ctrl->device, "CSTS=0x%x\n", csts);
+		
 		if (csts == ~0)
 			return -ENODEV;
 		if ((csts & NVME_CSTS_RDY) == bit)
@@ -2357,6 +2367,7 @@ int nvme_enable_ctrl(struct nvme_ctrl *ctrl)
 	}
 	dev_page_min = NVME_CAP_MPSMIN(ctrl->cap) + 12;
 
+
 	if (NVME_CTRL_PAGE_SHIFT < dev_page_min) {
 		dev_err(ctrl->device,
 			"Minimum device page size %u too large for host (%u)\n",
@@ -2368,6 +2379,12 @@ int nvme_enable_ctrl(struct nvme_ctrl *ctrl)
 		ctrl->ctrl_config = NVME_CC_CSS_CSI;
 	else
 		ctrl->ctrl_config = NVME_CC_CSS_NVM;
+
+	ctrl->page_size = NVME_CTRL_PAGE_SIZE;
+
+	dev_info(ctrl->device, "page size %u, max queue entries %u\n",
+		 ctrl->page_size, NVME_CAP_MQES(ctrl->cap) + 1);
+
 	ctrl->ctrl_config |= (NVME_CTRL_PAGE_SHIFT - 12) << NVME_CC_MPS_SHIFT;
 	ctrl->ctrl_config |= NVME_CC_AMS_RR | NVME_CC_SHN_NONE;
 	ctrl->ctrl_config |= NVME_CC_IOSQES | NVME_CC_IOCQES;
@@ -2376,6 +2393,8 @@ int nvme_enable_ctrl(struct nvme_ctrl *ctrl)
 	ret = ctrl->ops->reg_write32(ctrl, NVME_REG_CC, ctrl->ctrl_config);
 	if (ret)
 		return ret;
+
+	dev_info(ctrl->device, "Before nvme_wait_ready CC=0x%x\n", ctrl->ctrl_config);
 	return nvme_wait_ready(ctrl, ctrl->cap, true);
 }
 EXPORT_SYMBOL_GPL(nvme_enable_ctrl);
@@ -3997,8 +4016,13 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, unsigned nsid,
 	struct nvme_id_ns *id;
 	int node = ctrl->numa_node;
 
+	dev_info(ctrl->device,
+		"Before nvme_alloc_ns Adding namespace %d\n", nsid);
 	if (nvme_identify_ns(ctrl, nsid, ids, &id))
 		return;
+	
+	dev_info(ctrl->device,
+		"After nvme_alloc_ns Adding namespace %d\n", nsid);
 
 	ns = kzalloc_node(sizeof(*ns), GFP_KERNEL, node);
 	if (!ns)
@@ -4012,6 +4036,10 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, unsigned nsid,
 
 	ns->disk = disk;
 	ns->queue = disk->queue;
+
+	dev_info(ctrl->device,
+		"Check point %d\n", nsid);
+
 
 	if (ctrl->opts && ctrl->opts->data_digest)
 		blk_queue_flag_set(QUEUE_FLAG_STABLE_WRITES, ns->queue);
@@ -4052,6 +4080,9 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, unsigned nsid,
 	nvme_mpath_add_disk(ns, id);
 	nvme_fault_inject_init(&ns->fault_inject, ns->disk->disk_name);
 	kfree(id);
+
+	dev_info(ctrl->device,
+		"Finally After nvme_alloc_ns Adding namespace %d\n", nsid);
 
 	return;
 
@@ -4119,11 +4150,21 @@ static void nvme_ns_remove(struct nvme_ns *ns)
 
 static void nvme_ns_remove_by_nsid(struct nvme_ctrl *ctrl, u32 nsid)
 {
+	dev_info(ctrl->device,
+		"[func] Before nvme_find_get_ns Removing namespace %d\n", nsid);
 	struct nvme_ns *ns = nvme_find_get_ns(ctrl, nsid);
-
+	dev_info(ctrl->device,
+		"[func] After nvme_find_get_ns Removing namespace %d\n", nsid);
+	
 	if (ns) {
+		dev_info(ctrl->device,
+			"[func] Before nvme_ns_remove Removing namespace %d\n", nsid);
 		nvme_ns_remove(ns);
+		dev_info(ctrl->device,
+			"[func] After nvme_ns_remove Removing namespace %d\n", nsid);
 		nvme_put_ns(ns);
+		dev_info(ctrl->device,
+			"[func] After nvme_put_ns Removing namespace %d\n", nsid);
 	}
 }
 
@@ -4135,9 +4176,18 @@ static void nvme_validate_ns(struct nvme_ns *ns, struct nvme_ns_ids *ids)
 	if (test_bit(NVME_NS_DEAD, &ns->flags))
 		goto out;
 
+	dev_info(ns->ctrl->device,
+		"[before nvme_identify_ns]: validating nsid %d\n", ns->head->ns_id);
 	ret = nvme_identify_ns(ns->ctrl, ns->head->ns_id, ids, &id);
+
+	dev_info(ns->ctrl->device,
+		"[after nvme_identify_ns]: validating nsid %d\n", ns->head->ns_id);
+
 	if (ret)
 		goto out;
+
+	dev_info(ns->ctrl->device,
+		"[after if ret check]: validating nsid %d\n", ns->head->ns_id);
 
 	ret = NVME_SC_INVALID_NS | NVME_SC_DNR;
 	if (!nvme_ns_ids_equal(&ns->head->ids, ids)) {
@@ -4255,14 +4305,30 @@ static int nvme_scan_ns_list(struct nvme_ctrl *ctrl)
 			if (!nsid)	/* end of the list? */
 				goto out;
 			nvme_validate_or_alloc_ns(ctrl, nsid);
-			while (++prev < nsid)
+			dev_info(ctrl->device,
+				"After nvme_validate_or_alloc_ns Adding namespace %d\n", nsid);
+			while (++prev < nsid){
+				dev_info(ctrl->device,
+				"[While] Before nvme_ns_remove_by_nsid\n");
 				nvme_ns_remove_by_nsid(ctrl, prev);
+				dev_info(ctrl->device,
+				"[While] After nvme_ns_remove_by_nsid\n");
+			}
 		}
+
+		dev_info(ctrl->device,
+			"I am in the loop of nvme_scan_ns_list\n");
 	}
  out:
+	dev_info(ctrl->device, 
+		"I am out!!!!!\n");
 	nvme_remove_invalid_namespaces(ctrl, prev);
  free:
+	dev_info(ctrl->device,
+		"Before [kfree]: ns_list in nvme_scan_ns_list\n");
 	kfree(ns_list);
+	dev_info(ctrl->device,
+		"After [kfree]: ns_list in nvme_scan_ns_list\n");
 	return ret;
 }
 
@@ -4279,6 +4345,8 @@ static void nvme_scan_ns_sequential(struct nvme_ctrl *ctrl)
 	for (i = 1; i <= nn; i++)
 		nvme_validate_or_alloc_ns(ctrl, i);
 
+	dev_info(ctrl->device,
+		"After nvme_scan_ns_sequential Adding namespace %d\n", nn);
 	nvme_remove_invalid_namespaces(ctrl, nn);
 }
 
@@ -4337,9 +4405,20 @@ static void nvme_scan_work(struct work_struct *work)
 	}
 
 	mutex_lock(&ctrl->scan_lock);
-	if (nvme_scan_ns_list(ctrl) != 0)
+
+	dev_info(ctrl->device,
+		"Before nvme_scan_ns_list %d\n", ctrl->instance);
+	if (nvme_scan_ns_list(ctrl) != 0){
+		dev_info(ctrl->device,
+			"After nvme_scan_ns_list【out1】 %d\n", ctrl->instance);
 		nvme_scan_ns_sequential(ctrl);
+	}
+	dev_info(ctrl->device,
+			"After nvme_scan_ns_list【out2】 %d\n", ctrl->instance);
 	mutex_unlock(&ctrl->scan_lock);
+
+	dev_info(ctrl->device,
+		"after mutex_unlock %d\n", ctrl->instance);
 }
 
 /*
@@ -4690,11 +4769,26 @@ int nvme_init_ctrl(struct nvme_ctrl *ctrl, struct device *dev,
 	ctrl->ops = ops;
 	ctrl->quirks = quirks;
 	ctrl->numa_node = NUMA_NO_NODE;
+
+	dev_info(ctrl->device,
+		"INIT_WORK before nvme_scan_work %d\n", ctrl->instance);
 	INIT_WORK(&ctrl->scan_work, nvme_scan_work);
+	dev_info(ctrl->device,
+		"INIT_WORK before async_event_work %d\n", ctrl->instance);
 	INIT_WORK(&ctrl->async_event_work, nvme_async_event_work);
+	dev_info(ctrl->device,
+		"INIT_WORK before nvme_fw_act_work %d\n", ctrl->instance);
 	INIT_WORK(&ctrl->fw_act_work, nvme_fw_act_work);
+	dev_info(ctrl->device,
+		"INIT_WORK before nvme_delete_ctrl_work %d\n", ctrl->instance);
 	INIT_WORK(&ctrl->delete_work, nvme_delete_ctrl_work);
+
+	dev_info(ctrl->device,
+		"INIT_WORK before init_waitqueue_head %d\n", ctrl->instance);
 	init_waitqueue_head(&ctrl->state_wq);
+
+	dev_info(ctrl->device,
+		"INIT_WORK after init_waitqueue_head %d\n", ctrl->instance);
 
 	INIT_DELAYED_WORK(&ctrl->ka_work, nvme_keep_alive_work);
 	INIT_DELAYED_WORK(&ctrl->failfast_work, nvme_failfast_work);

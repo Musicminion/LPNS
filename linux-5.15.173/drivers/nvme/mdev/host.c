@@ -79,7 +79,9 @@ static struct nvme_mdev_hctrl *nvme_mdev_hctrl_create(struct nvme_ctrl *ctrl)
 
 	/* TODOLATER: IO: support more page size configurations*/
 	if (ctrl->page_size != PAGE_SIZE) {
-		dev_info(ctrl->dev, "no support for mdev - page_size mismatch");
+		// dev_info(ctrl->dev, "no support for mdev - page_size mismatch");
+		dev_info(ctrl->dev, "[bug?] no support for mdev - page_size mismatch: ctrl->page_size=%u, PAGE_SIZE=%lu\n",
+                 ctrl->page_size, PAGE_SIZE);
 		return NULL;
 	}
 

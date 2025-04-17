@@ -51,10 +51,13 @@ $ 5.0.0ADLP+
 
 First of all, we use the following example shell commands to show how we can set up a qemu/kvm virtual machine and attach the LPNS-virtualized NVMe device to it.
 
- ```
+```
+# 首先得删掉这个 mod
+$ rmmod nvme-mdev
+$ rmmod nvme
 # Please load the nvme pci driver with $TOTAL_QUEUES$ (in the case, 8) I/O queues into the hardware queue pool, and configure the $Omega$ parameter (in the case, 280)
-$ modprobe nvme-mdev # load the nvme-mdev driver
-$ modprobe nvme mdev_queues=8 total_threshold=280
+$ modprobe nvme-mdev mdev_device_num=8 total_threshold=280  # load the nvme-mdev driver
+$ modprobe nvme mdev_queues=8
 
 # Please use the real NVMe device BDF
 $ PCI_DEVICE=/sys/bus/pci/devices/0000:XX:00.0 
