@@ -322,7 +322,8 @@ struct nvme_mdev_inst_type *nvme_mdev_inst_type_get(const char *name)
 static ssize_t name_show(struct mdev_type *mtype,
 			       struct mdev_type_attribute *attr, char *buf)
 {
-	return sprintf(buf, "%s\n", mtype->kobj.name);
+	struct kobject *kobj  = &mtype->kobj;
+	return sprintf(buf, "%s\n", kobj->name);
 }
 static MDEV_TYPE_ATTR_RO(name);
 
@@ -330,7 +331,8 @@ static MDEV_TYPE_ATTR_RO(name);
 static ssize_t description_show(struct mdev_type *mtype,
 			       struct mdev_type_attribute *attr, char *buf)
 {
-	struct nvme_mdev_inst_type *type = nvme_mdev_inst_type_get(mtype->kobj.name);
+	struct kobject *kobj  = &mtype->kobj;
+	struct nvme_mdev_inst_type *type = nvme_mdev_inst_type_get(kobj->name);
 
 	return sprintf(buf,
 		       "MDEV nvme device, using maximum %d hw submission queues\n",
@@ -352,7 +354,9 @@ static MDEV_TYPE_ATTR_RO(device_api);
 static ssize_t available_instances_show(struct mdev_type *mtype,
 			       struct mdev_type_attribute *attr, char *buf)
 {
-	struct nvme_mdev_inst_type *type = nvme_mdev_inst_type_get(mtype->kobj.name);
+	struct kobject *kobj  = &mtype->kobj;
+
+	struct nvme_mdev_inst_type *type = nvme_mdev_inst_type_get(kobj->name);
 	struct nvme_mdev_hctrl *hctrl = nvme_mdev_hctrl_lookup_get(mtype->parent->dev);
 	int count;
 

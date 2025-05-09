@@ -54,10 +54,14 @@ static int nvme_mdev_unmap_notifier(struct notifier_block *nb,
 	return NOTIFY_OK;
 }
 
+
+
+
 /* Called when new mediated device is created */
 static int nvme_mdev_ops_create(struct mdev_device *mdev)
 {
-	struct kobject *kobj = &mdev->dev.kobj;
+	struct mdev_type *mtype = mdev->type;
+	struct kobject   *kobj  = &mtype->kobj;
 	
 	int ret = 0;
 	const struct nvme_mdev_inst_type *type = NULL;

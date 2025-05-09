@@ -2351,6 +2351,7 @@ int nvme_disable_ctrl(struct nvme_ctrl *ctrl)
 	if (ctrl->quirks & NVME_QUIRK_DELAY_BEFORE_CHK_RDY)
 		msleep(NVME_QUIRK_DELAY_AMOUNT);
 
+	dev_info(ctrl->device, "Before nvme_wait_ready[place2] ");
 	return nvme_wait_ready(ctrl, ctrl->cap, false);
 }
 EXPORT_SYMBOL_GPL(nvme_disable_ctrl);
@@ -2394,7 +2395,7 @@ int nvme_enable_ctrl(struct nvme_ctrl *ctrl)
 	if (ret)
 		return ret;
 
-	dev_info(ctrl->device, "Before nvme_wait_ready CC=0x%x\n", ctrl->ctrl_config);
+	dev_info(ctrl->device, "Before nvme_wait_ready[place1] CC=0x%x\n", ctrl->ctrl_config);
 	return nvme_wait_ready(ctrl, ctrl->cap, true);
 }
 EXPORT_SYMBOL_GPL(nvme_enable_ctrl);
@@ -3092,6 +3093,8 @@ free_data:
 
 static int nvme_init_identify(struct nvme_ctrl *ctrl)
 {
+	dev_info(ctrl->device, "[debug] I am in nvme_init_identify\n");
+
 	struct nvme_id_ctrl *id;
 	u32 max_hw_sectors;
 	bool prev_apst_enabled;

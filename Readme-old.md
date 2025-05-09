@@ -60,25 +60,25 @@ $ modprobe nvme-mdev mdev_device_num=8 total_threshold=280  # load the nvme-mdev
 $ modprobe nvme mdev_queues=8
 
 # Please use the real NVMe device BDF
-$ PCI_DEVICE=/sys/bus/pci/devices/0000:XX:00.0 
+$ PCI_DEVICE=/sys/bus/pci/devices/0000:08:00.0
 
 # Please generate random UUID for each mediated device
-$ UUID=$(uuidgen) 
+$ UUID=$(uuidgen)
 $ MDEV_DEVICE=/sys/bus/mdev/devices/$UUID
 
 # Please create the mediated device using N (in the case, N=2) I/O queues from the hardware queue pool,and LPNS hyervisor can allocate, schedule, and re-arrange the $TOTAL_QUEUES$  I/O queues to provide queues for each virtual device.
-$ echo $UUID > $PCI_DEVICE/mdev_supported_types/nvme-2Q_V1/create 
+$ echo $UUID > $PCI_DEVICE/mdev_supported_types/nvme-2Q_V1/create
 
 
 # Please attach partition X (in the case, X=1) of namespace Y (in the case, Y=1) to a free virtual namespace
 # We provide a scripts/LP_partition.sh script file to generate several partitions on one SSD for multiple VM experiments.
-$ echo n1p1 > $MDEV_DEVICE/namespaces/add_namespace
+$ echo n1p5 > $MDEV_DEVICE/namespaces/add_namespace
 
 # Please bind the polling thread to cpu core X (in the case, 40)
-$ echo 40> $MDEV_DEVICE/settings/iothread_cpu
+$ echo 8> $MDEV_DEVICE/settings/iothread_cpu
 
 # Please configure if the VM is a latency-predictable VM (N=2, else N=0);
-echo 2 > ${MDEV_DEVICE_1}/settings/qos
+echo 2 > ${MDEV_DEVICE}/settings/qos
 
 # Please add these configuration to qemu script, and boot the VM
 #  -device vfio-pci,sysfsdev=/sys/bus/mdev/devices/$UUID

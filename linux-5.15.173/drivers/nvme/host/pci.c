@@ -1452,7 +1452,13 @@ static int nvme_suspend_queue(struct nvme_queue *nvmeq)
 	/* ensure that nvme_queue_rq() sees NVMEQ_ENABLED cleared */
 	mb();
 
+
 	nvmeq->dev->online_queues--;
+	dev_info(nvmeq->dev->ctrl.device,
+		"[online queue--] queue %d is being suspended", nvmeq->qid);
+	dev_info(nvmeq->dev->ctrl.device,
+		"now %d queues are online\n", nvmeq->dev->online_queues);
+
 	if (!nvmeq->qid && nvmeq->dev->ctrl.admin_q)
 		blk_mq_quiesce_queue(nvmeq->dev->ctrl.admin_q);
 	if (!test_and_clear_bit(NVMEQ_POLLED, &nvmeq->flags))
@@ -1608,7 +1614,13 @@ static void nvme_init_queue(struct nvme_queue *nvmeq, u16 qid)
 	nvmeq->q_db = &dev->dbs[qid * 2 * dev->db_stride];
 	memset((void *)nvmeq->cqes, 0, CQ_SIZE(nvmeq));
 	nvme_dbbuf_init(dev, nvmeq, qid);
+
 	dev->online_queues++;
+	dev_info(dev->ctrl.device,
+		"[online queue++] queue %d is being initialized", qid);
+	dev_info(dev->ctrl.device,
+		"now %d queues online\n", dev->online_queues);
+	
 	wmb(); /* ensure the first interrupt sees the initialization */
 
 	if (test_bit(NVMEQ_EXTERNAL, &nvmeq->flags))
@@ -1655,10 +1667,16 @@ static int nvme_create_queue(struct nvme_queue *nvmeq, int qid, bool polled)
 		set_bit(NVMEQ_POLLED, &nvmeq->flags);
 
 	result = adapter_alloc_cq(dev, qid, nvmeq, vector);
-	if (result)
+
+	dev_info(nvmeq->dev->ctrl.device, "[nvme_create_queue1] result is %d\n", result);
+	if (result){
 		return result;
+	}
 
 	result = adapter_alloc_sq(dev, qid, nvmeq);
+
+	dev_info(nvmeq->dev->ctrl.device, "[nvme_create_queue2] result is %d\n", result);
+
 	if (result < 0)
 		return result;
 	if (result)
@@ -1667,11 +1685,16 @@ static int nvme_create_queue(struct nvme_queue *nvmeq, int qid, bool polled)
 	nvmeq->cq_vector = vector;
 
 	result = nvme_setup_io_queues_trylock(dev);
+
+	dev_info(nvmeq->dev->ctrl.device, "[nvme_create_queue3] result is %d\n", result);
+
 	if (result)
 		return result;
 	nvme_init_queue(nvmeq, qid);
 	if (!polled) {
 		result = queue_request_irq(nvmeq);
+
+		dev_info(nvmeq->dev->ctrl.device, "[nvme_create_queue4] result is %d\n", result);
 		if (result < 0)
 			goto release_sq;
 	}
@@ -1681,7 +1704,13 @@ static int nvme_create_queue(struct nvme_queue *nvmeq, int qid, bool polled)
 	return result;
 
 release_sq:
+
 	dev->online_queues--;
+	dev_info(nvmeq->dev->ctrl.device,
+		"[online queue--] queue %d is being suspended from release_sq:", nvmeq->qid);
+	dev_info(nvmeq->dev->ctrl.device,
+		"now %d queues are online\n", nvmeq->dev->online_queues);
+	
 	mutex_unlock(&dev->shutdown_lock);
 	adapter_delete_sq(dev, qid);
 release_cq:
@@ -1825,7 +1854,13 @@ static int nvme_pci_configure_admin_queue(struct nvme_dev *dev)
 	nvme_init_queue(nvmeq, 0);
 	result = queue_request_irq(nvmeq);
 	if (result) {
+
 		dev->online_queues--;
+		dev_info(nvmeq->dev->ctrl.device,
+			"[online queue--] queue %d is being suspended from nvme_pci_configure_admin_queue", nvmeq->qid);
+		dev_info(nvmeq->dev->ctrl.device,
+			"now %d queues are online\n", nvmeq->dev->online_queues);
+
 		return result;
 	}
 
@@ -1838,14 +1873,22 @@ static int nvme_create_io_queues(struct nvme_dev *dev)
 	unsigned i, max, rw_queues;
 	int ret = 0;
 
+	// 打印日志输出
+	dev_info(dev->ctrl.device,
+		"nvme_create_io_queues: %d, dev->ctrl.queue_count = n", dev->ctrl.queue_count);
 	for (i = dev->ctrl.queue_count; i <= dev->max_qid; i++) {
 		if (nvme_alloc_queue(dev, i, dev->q_depth)) {
+			dev_info(dev->ctrl.device, "failed to allocate1 queue %d, will break\n", i);
 			ret = -ENOMEM;
 			break;
 		}
 	}
 
 	max = min(dev->max_qid, dev->ctrl.queue_count - 1);
+
+	//
+	dev_info(dev->ctrl.device, "now max is %d", max);
+
 	// if (max != 1 && dev->io_queues[HCTX_TYPE_POLL]) {
 	if (max != 1) {
 		rw_queues = dev->io_queues[HCTX_TYPE_DEFAULT] +
@@ -1854,12 +1897,18 @@ static int nvme_create_io_queues(struct nvme_dev *dev)
 		rw_queues = max;
 	}
 
+	dev_info(dev->ctrl.device, "now online queues is %d ", dev->online_queues);
+
 	for (i = dev->online_queues; i <= max; i++) {
 		bool polled = i > rw_queues;
 
 		ret = nvme_create_queue(&dev->queues[i], i, polled);
-		if (ret)
+		if (ret){
+			dev_info(dev->ctrl.device,
+				"failed to allocate2 queue %d, will break\n", i);
 			break;
+		}
+
 	}
 
 	/*
@@ -2115,8 +2164,15 @@ static int nvme_setup_host_mem(struct nvme_dev *dev)
 	}
 
 	ret = nvme_set_host_mem(dev, enable_bits);
-	if (ret)
+	if (ret){
 		nvme_free_host_mem(dev);
+		dev_info(dev->ctrl.device,
+			"[debug] failed to set host memory buffer (err %d).\n", ret);
+	}
+	
+	dev_info(dev->ctrl.device,
+		"[debug] will return %lld MiB host memory buffer.\n",
+		dev->host_mem_size >> ilog2(SZ_1M));
 	return ret;
 }
 
@@ -2170,6 +2226,8 @@ static ssize_t hmb_store(struct device *dev, struct device_attribute *attr,
 		return count;
 
 	if (new) {
+		dev_info(ndev->ctrl.device,
+			"[debug] here1 in nvme_setup_host_mem\n");
 		ret = nvme_setup_host_mem(ndev);
 	} else {
 		ret = nvme_set_host_mem(ndev, 0);
@@ -2327,11 +2385,14 @@ static unsigned int nvme_max_io_queues(struct nvme_dev *dev)
 
 static int nvme_setup_io_queues(struct nvme_dev *dev)
 {
+	dev_info(dev->ctrl.device, "[debug] In nvme_setup_io_queues\n");
 	struct nvme_queue *adminq = &dev->queues[0];
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 	unsigned int nr_io_queues;
 	unsigned long size;
 	int result;
+
+	dev_info(dev->ctrl.device, "[debug] point 01 nvme_setup_io_queues\n");
 
 	/*
 	 * Sample the module parameters once at reset time so that we have
@@ -2347,6 +2408,8 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 
 	if (nr_io_queues == 0)
 		return 0;
+
+	dev_info(dev->ctrl.device, "[debug] point 02 nvme_setup_io_queues\n");
 
 	/*
 	 * Free IRQ resources as soon as NVMEQ_ENABLED bit transitions
@@ -2370,7 +2433,10 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 			dev->cmb_use_sqes = false;
 	}
 
+	dev_info(dev->ctrl.device, "[debug] point 03 nvme_setup_io_queues\n");
+
 	do {
+		dev_info(dev->ctrl.device, "[debug] point 04 nvme_setup_io_queues\n");
 		size = db_bar_size(dev, nr_io_queues);
 		result = nvme_remap_bar(dev, size);
 		if (!result)
@@ -2383,6 +2449,8 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	adminq->q_db = dev->dbs;
 
  retry:
+	dev_info(dev->ctrl.device, "[debug] point 05 retry: nvme_setup_io_queues\n");
+
 	/* Deregister the admin queue's interrupt */
 	if (test_and_clear_bit(NVMEQ_ENABLED, &adminq->flags))
 		pci_free_irq(pdev, 0, adminq);
@@ -2393,6 +2461,8 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	 */
 	pci_free_irq_vectors(pdev);
 
+	dev_info(dev->ctrl.device, "[debug] point 06 retry: nvme_setup_io_queues\n");
+
 	result = nvme_setup_irqs(dev, nr_io_queues);
 	if (result <= 0) {
 		result = -EIO;
@@ -2401,8 +2471,17 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 
 	dev->num_vecs = result;
 	result = max(result - 1, 1);
+
+	// 确认了max qid的值太大
 	dev->max_qid = result + dev->io_queues[HCTX_TYPE_POLL] + dev->mdev_queues;
 
+	dev_info(dev->ctrl.device, "[debug] point 07 retry: nvme_setup_io_queues\n");
+	// print all queueues num
+	dev_info(dev->ctrl.device, "[debug] point 07.1 retry: nvme_setup_io_queues, result = %d", result);
+	dev_info(dev->ctrl.device, "[debug] point 07.2 retry: nvme_setup_io_queues,dev->io_queues[HCTX_TYPE_POLL] = %d", dev->io_queues[HCTX_TYPE_POLL]);
+	dev_info(dev->ctrl.device, "[debug] point 07.3 retry: nvme_setup_io_queues,dev->mdev_queues = %d", dev->mdev_queues);
+
+	
 	/*
 	 * Should investigate if there's a performance win from allocating
 	 * more queues than interrupt vectors; it might allow the submission
@@ -2415,11 +2494,20 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	set_bit(NVMEQ_ENABLED, &adminq->flags);
 	mutex_unlock(&dev->shutdown_lock);
 
+	dev_info(dev->ctrl.device, "[debug] point 08 retry: nvme_setup_io_queues\n");
+
 	result = nvme_create_io_queues(dev);
 	if (result || dev->online_queues < 2)
 		return result;
 
+	dev_info(dev->ctrl.device, "[debug] point 09 retry: nvme_setup_io_queues\n");
+
+	// online_queues的数量是
+	dev_info(dev->ctrl.device, "[debug] point 09.1 retry: nvme_setup_io_queues, online_queues = %d\n", dev->online_queues);
+	dev_info(dev->ctrl.device, "[debug] point 09.2 retry: nvme_setup_io_queues, max_qid = %d\n", dev->max_qid);
+
 	if (dev->online_queues - 1 < dev->max_qid) {
+
 		nr_io_queues = dev->online_queues - 1;
 		nvme_disable_io_queues(dev);
 		result = nvme_setup_io_queues_trylock(dev);
@@ -2440,6 +2528,7 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 					dev->mdev_queues);
 	return 0;
 out_unlock:
+	dev_info(dev->ctrl.device, "[debug] point 10 out_unlock: nvme_setup_io_queues\n");
 	mutex_unlock(&dev->shutdown_lock);
 	return result;
 }
@@ -3133,6 +3222,9 @@ static void nvme_reset_work(struct work_struct *work)
 {
 	struct nvme_dev *dev =
 		container_of(work, struct nvme_dev, ctrl.reset_work);
+	
+	dev_info(dev->ctrl.device,
+		"[debug] nvme_reset_work: start\n");
 	bool was_suspend = !!(dev->ctrl.ctrl_config & NVME_CC_SHN_NORMAL);
 	int result;
 
@@ -3221,12 +3313,19 @@ static void nvme_reset_work(struct work_struct *work)
 	}
 
 	if (dev->ctrl.hmpre) {
+		dev_info(dev->ctrl.device,
+			"[debug] here2 in nvme_setup_host_mem\n");
 		result = nvme_setup_host_mem(dev);
 		if (result < 0)
 			goto out;
 	}
 
+	dev_info(dev->ctrl.device,
+		 "[debug] will nvme_setup_io_queues\n");
 	result = nvme_setup_io_queues(dev);
+	dev_info(dev->ctrl.device,
+		"[debug] end nvme_setup_io_queues\n");
+
 	if (result)
 		goto out;
 
@@ -3265,8 +3364,12 @@ static void nvme_reset_work(struct work_struct *work)
 	return;
 
  out_unlock:
+ 	dev_info(dev->ctrl.device,
+		"[debug] nvme_reset_work: out_unlock: result %d\n", result);
 	mutex_unlock(&dev->shutdown_lock);
  out:
+	dev_info(dev->ctrl.device,
+		 "[debug] nvme_reset_work: out: result %d\n", result);
 	if (result)
 		dev_warn(dev->ctrl.device,
 			 "Removing after probe failure status: %d\n", result);
@@ -3509,10 +3612,15 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (result)
 		goto out_release_prp_pools;
 
-	dev_info(dev->ctrl.device, "pci function %s\n", dev_name(&pdev->dev));
+	dev_info(dev->ctrl.device, "[[tmp debug]] pci function %s\n", dev_name(&pdev->dev));
 	pci_set_drvdata(pdev, dev);
 
+	
+	dev_info(dev->ctrl.device,
+		"[debug] nvme_reset_ctrl before \n");
 	nvme_reset_ctrl(&dev->ctrl);
+	dev_info(dev->ctrl.device,
+		 "[debug] nvme_reset_ctrl end \n");
 	async_schedule(nvme_async_probe, dev);
 	return 0;
 
@@ -3609,6 +3717,9 @@ static int nvme_resume(struct device *dev)
 	if (ndev->last_ps == U32_MAX ||
 	    nvme_set_power_state(ctrl, ndev->last_ps) != 0)
 		goto reset;
+
+	dev_info(ctrl->device, "[debug] here3 into nvme_setup_host_mem resuming from power state %x\n",
+		 ndev->last_ps);
 	if (ctrl->hmpre && nvme_setup_host_mem(ndev))
 		goto reset;
 
