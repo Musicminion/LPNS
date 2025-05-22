@@ -157,12 +157,26 @@ int nvme_mdev_vns_open(struct nvme_mdev_vctrl *vctrl,
 
 	/* get the block device for the partition that we will use */
 	// vns->host_part = bdget_disk(vns->host_ns->disk, host_partid);
+	// 这里也是之前删了的
 	vns->host_part = xa_load(&vns->host_ns->disk->part_tbl, host_partid);
 
 	if (!vns->host_part) {
 		ret = -ENODEV;
 		goto error2;
 	}
+
+	dev_t devt = MKDEV(vns->host_ns->disk->major,
+                 vns->host_ns->disk->first_minor + vns->host_partid);
+	
+
+	// vns->host_part = blkdev_get_by_dev(devt,
+    //     FMODE_READ | FMODE_EXCL, vns);
+
+	// if (IS_ERR(vns->host_part)) {
+	// 	ret = PTR_ERR(vns->host_part);
+	// 	goto error2;
+	// }
+
 
 	/* get exclusive access to the block device (partition) */
 	vns->fmode = FMODE_READ | FMODE_EXCL;
@@ -171,10 +185,15 @@ int nvme_mdev_vns_open(struct nvme_mdev_vctrl *vctrl,
 
 	// ret = blkdev_get(vns->host_part, vns->fmode, vns);
 	// 之前这里的代码函数删了 改成这样的
-	ret = blkdev_get_by_dev(vns->host_part->bd_dev, vns->fmode, vns);
+	vns->host_part = blkdev_get_by_dev(devt, vns->fmode, vns);
 
-	if (ret)
+	// if (ret)
+	// 	goto error2;
+
+	if (IS_ERR(vns->host_part)) {
+		ret = PTR_ERR(vns->host_part);
 		goto error2;
+	}
 
 	/* read properties of the host namespace */
 	nvme_mdev_vns_read_host_properties(vctrl, vns, vns->host_ns);

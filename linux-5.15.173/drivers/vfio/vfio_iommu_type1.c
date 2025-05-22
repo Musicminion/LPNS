@@ -68,7 +68,9 @@ struct vfio_iommu {
 	struct vfio_domain	*external_domain; /* domain for external user */
 	struct mutex		lock;
 	struct rb_root		dma_list;
-	struct blocking_notifier_head notifier;
+	// struct blocking_notifier_head notifier;
+	struct blocking_notifier_head map_notifiers;
+	struct blocking_notifier_head unmap_notifiers;
 	unsigned int		dma_avail;
 	unsigned int		vaddr_invalid_count;
 	uint64_t		pgsize_bitmap;
@@ -80,6 +82,11 @@ struct vfio_iommu {
 	bool			container_open;
 };
 
+
+
+/* An IOMMU domain - also usually one per VM, unless devices assigned to VM
+ * are connected via different IOMMUs
+ */
 struct vfio_domain {
 	struct iommu_domain	*domain;
 	struct list_head	next;
@@ -894,7 +901,8 @@ again:
 	}
 
 	/* Fail if notifier list is empty */
-	if (!iommu->notifier.head) {
+	// if (!iommu->notifier.head) {
+	if (!iommu->external_domain) {
 		ret = -EINVAL;
 		goto pin_done;
 	}
@@ -1454,7 +1462,9 @@ again:
 			 * invalidation.
 			 */
 			mutex_unlock(&iommu->lock);
-			blocking_notifier_call_chain(&iommu->notifier,
+
+			// blocking_notifier_call_chain(&iommu->notifier,
+			blocking_notifier_call_chain(&iommu->unmap_notifiers,
 						    VFIO_IOMMU_NOTIFY_DMA_UNMAP,
 						    &nb_unmap);
 			mutex_lock(&iommu->lock);
@@ -1718,11 +1728,26 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 	else
 		ret = vfio_pin_map_dma(iommu, dma, size);
 
-	if (!ret && iommu->dirty_page_tracking) {
-		ret = vfio_dma_bitmap_alloc(dma, pgsize);
-		if (ret)
-			vfio_remove_dma(iommu, dma);
-	}
+	// if (!ret && iommu->dirty_page_tracking) {
+	// 	ret = vfio_dma_bitmap_alloc(dma, pgsize);
+	// 	if (ret)
+	// 		vfio_remove_dma(iommu, dma);
+	// }
+
+	mutex_unlock(&iommu->lock);
+
+	/*
+	 * Notify anyone (mdev vendor drivers) that new mapping has being
+	 * created - vendor drivers can in response pin/dma map the memory
+	 */
+	ret = blocking_notifier_call_chain(&iommu->map_notifiers,
+				    VFIO_IOMMU_NOTIFY_DMA_MAP,
+				    map);
+
+	ret = notifier_to_errno(ret);
+	if (ret)
+		vfio_remove_dma(iommu, dma);
+	return ret;
 
 out_unlock:
 	mutex_unlock(&iommu->lock);
@@ -2623,7 +2648,7 @@ static void vfio_iommu_type1_detach_group(void *iommu_data,
 
 			if (list_empty(&iommu->external_domain->group_list)) {
 				if (!IS_IOMMU_CAP_DOMAIN_IN_CONTAINER(iommu)) {
-					WARN_ON(iommu->notifier.head);
+					// WARN_ON(iommu->notifier.head);
 					vfio_iommu_unmap_unpin_all(iommu);
 				}
 
@@ -2660,7 +2685,7 @@ static void vfio_iommu_type1_detach_group(void *iommu_data,
 		if (list_empty(&domain->group_list)) {
 			if (list_is_singular(&iommu->domain_list)) {
 				if (!iommu->external_domain) {
-					WARN_ON(iommu->notifier.head);
+					// WARN_ON(iommu->notifier.head);
 					vfio_iommu_unmap_unpin_all(iommu);
 				} else {
 					vfio_iommu_unmap_unpin_reaccount(iommu);
@@ -2721,7 +2746,9 @@ static void *vfio_iommu_type1_open(unsigned long arg)
 	iommu->dma_avail = dma_entry_limit;
 	iommu->container_open = true;
 	mutex_init(&iommu->lock);
-	BLOCKING_INIT_NOTIFIER_HEAD(&iommu->notifier);
+	// BLOCKING_INIT_NOTIFIER_HEAD(&iommu->notifier);
+	BLOCKING_INIT_NOTIFIER_HEAD(&iommu->unmap_notifiers);
+	BLOCKING_INIT_NOTIFIER_HEAD(&iommu->map_notifiers);
 	init_waitqueue_head(&iommu->vaddr_wait);
 
 	return iommu;
@@ -3162,14 +3189,70 @@ static int vfio_iommu_type1_register_notifier(void *iommu_data,
 {
 	struct vfio_iommu *iommu = iommu_data;
 
-	/* clear known events */
-	*events &= ~VFIO_IOMMU_NOTIFY_DMA_UNMAP;
+	// /* clear known events */
+	// *events &= ~VFIO_IOMMU_NOTIFY_DMA_UNMAP;
 
-	/* refuse to register if still events remaining */
-	if (*events)
+	// /* refuse to register if still events remaining */
+	// if (*events)
+	// 	return -EINVAL;
+
+	// return blocking_notifier_chain_register(&iommu->notifier, nb);
+
+	struct rb_node *node;
+	int ret = 0;
+
+	if (*events == VFIO_IOMMU_NOTIFY_DMA_MAP) {
+
+		/* now register the notifier */
+		ret = blocking_notifier_chain_register(&iommu->map_notifiers,
+				nb);
+
+		/* replay the mapping */
+		 node = rb_first(&iommu->dma_list);
+		while (node) {
+			struct vfio_dma *dma = rb_entry(node, struct vfio_dma,
+					node);
+
+			struct vfio_iommu_type1_dma_map map;
+
+			map.argsz = sizeof(struct vfio_iommu_type1_dma_map);
+			map.flags = 0;
+
+			if (dma->prot & IOMMU_READ)
+				map.flags |= VFIO_DMA_MAP_FLAG_READ;
+			if (dma->prot & IOMMU_WRITE)
+				map.flags |= VFIO_DMA_MAP_FLAG_WRITE;
+
+			map.iova = dma->iova;
+			map.vaddr = dma->vaddr;
+			map.size = dma->size;
+
+			node = rb_next(node);
+
+			/* Call only the first notifier, the one that
+			 * we just registered
+			 */
+			ret = __blocking_notifier_call_chain(
+					&iommu->map_notifiers,
+					VFIO_IOMMU_NOTIFY_DMA_MAP,
+					&map, 1, NULL);
+
+			ret = notifier_to_errno(ret);
+			if (ret) {
+				blocking_notifier_chain_unregister(
+						&iommu->map_notifiers, nb);
+				return ret;
+			}
+		}
+
+	} else if (*events == VFIO_IOMMU_NOTIFY_DMA_UNMAP) {
+		ret =  blocking_notifier_chain_register(
+				&iommu->unmap_notifiers, nb);
+	} else {
 		return -EINVAL;
+	}
+	return ret;
 
-	return blocking_notifier_chain_register(&iommu->notifier, nb);
 }
 
 static int vfio_iommu_type1_unregister_notifier(void *iommu_data,
@@ -3177,7 +3260,15 @@ static int vfio_iommu_type1_unregister_notifier(void *iommu_data,
 {
 	struct vfio_iommu *iommu = iommu_data;
 
-	return blocking_notifier_chain_unregister(&iommu->notifier, nb);
+	// return blocking_notifier_chain_unregister(&iommu->notifier, nb);
+
+	int ret;
+
+	ret = blocking_notifier_chain_unregister(&iommu->map_notifiers, nb);
+	if (ret)
+		ret = blocking_notifier_chain_unregister(
+				&iommu->unmap_notifiers, nb);
+	return ret;
 }
 
 static int vfio_iommu_type1_dma_rw_chunk(struct vfio_iommu *iommu,

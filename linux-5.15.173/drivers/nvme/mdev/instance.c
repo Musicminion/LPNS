@@ -130,6 +130,8 @@ static int nvme_mdev_ops_open(struct mdev_device *mdev)
 				     &vctrl->vfio_unmap_notifier);
 
 	if (ret != 0) {
+		dev_info(mdev_dev(vctrl->mdev),
+			"nvme_mdev_vctrl_release before point1, ret=%d\n", ret);
 		nvme_mdev_vctrl_release(vctrl);
 		return ret;
 	}
@@ -146,6 +148,8 @@ static int nvme_mdev_ops_open(struct mdev_device *mdev)
 		vfio_unregister_notifier(mdev_dev(vctrl->mdev),
 					 VFIO_IOMMU_NOTIFY,
 					 &vctrl->vfio_unmap_notifier);
+		dev_info(mdev_dev(vctrl->mdev),
+			"nvme_mdev_vctrl_release before point2, ret=%d\n", ret);
 		nvme_mdev_vctrl_release(vctrl);
 		return ret;
 	}
@@ -156,6 +160,9 @@ static int nvme_mdev_ops_open(struct mdev_device *mdev)
 /* Called when new mediated device is closed (last close of the user) */
 static void nvme_mdev_ops_release(struct mdev_device *mdev)
 {
+	// 加一个log
+	dev_info(mdev_dev(mdev), "nvme_mdev_ops_release\n");
+
 	struct nvme_mdev_vctrl *vctrl = mdev_to_vctrl(mdev);
 	int ret;
 

@@ -1421,15 +1421,21 @@ static bool vfio_group_viable(struct vfio_group *group)
 
 static int vfio_group_add_container_user(struct vfio_group *group)
 {
-	if (!atomic_inc_not_zero(&group->container_users))
+	if (!atomic_inc_not_zero(&group->container_users)){
+		dev_info(group->dev, "vfio_group_add_container_user[1]: Group %d is not viable\n",
+			 iommu_group_id(group->iommu_group));
 		return -EINVAL;
-
+	}
+		
 	if (group->noiommu) {
 		atomic_dec(&group->container_users);
 		return -EPERM;
 	}
 	if (!group->container->iommu_driver || !vfio_group_viable(group)) {
 		atomic_dec(&group->container_users);
+
+		dev_info(group->dev, "vfio_group_add_container_user[2]: Group %d is not viable\n",
+			 iommu_group_id(group->iommu_group));
 		return -EINVAL;
 	}
 
@@ -2201,19 +2207,30 @@ static int vfio_register_iommu_notifier(struct vfio_group *group,
 	int ret;
 
 	ret = vfio_group_add_container_user(group);
-	if (ret)
+	if (ret){
+		pr_info("vfio_register_iommu_notifier[1]: Group %d is not viable\n",
+		       iommu_group_id(group->iommu_group));
 		return -EINVAL;
+	}
+		
 
 	container = group->container;
 	driver = container->iommu_driver;
-	if (likely(driver && driver->ops->register_notifier))
+	if (likely(driver && driver->ops->register_notifier)){
 		ret = driver->ops->register_notifier(container->iommu_data,
-						     events, nb);
-	else
+			events, nb);
+		// print ret value
+		dev_info(group->dev, "vfio_register_iommu_notifier[3]: group %d, events %lx, ret %d\n",
+			 iommu_group_id(group->iommu_group), *events, ret);
+	}
+
+	else{
+		pr_info("vfio_register_iommu_notifier[2]: Group %d is not viable\n",
+		       iommu_group_id(group->iommu_group));
 		ret = -ENOTTY;
+	}
 
 	vfio_group_try_dissolve_container(group);
-
 	return ret;
 }
 
@@ -2225,19 +2242,21 @@ static int vfio_unregister_iommu_notifier(struct vfio_group *group,
 	int ret;
 
 	ret = vfio_group_add_container_user(group);
-	if (ret)
+	if (ret){
 		return -EINVAL;
+	}
 
 	container = group->container;
 	driver = container->iommu_driver;
 	if (likely(driver && driver->ops->unregister_notifier))
 		ret = driver->ops->unregister_notifier(container->iommu_data,
 						       nb);
-	else
+	else{
 		ret = -ENOTTY;
+	}
+
 
 	vfio_group_try_dissolve_container(group);
-
 	return ret;
 }
 
@@ -2307,8 +2326,11 @@ int vfio_register_notifier(struct device *dev, enum vfio_notify_type type,
 	struct vfio_group *group;
 	int ret;
 
-	if (!dev || !nb || !events || (*events == 0))
+	if (!dev || !nb || !events || (*events == 0)){
+		dev_info(dev, "vfio_register_notifier[1]: Invalid parameters\n");
 		return -EINVAL;
+	}
+		
 
 	group = vfio_group_get_from_dev(dev);
 	if (!group)
@@ -2317,6 +2339,8 @@ int vfio_register_notifier(struct device *dev, enum vfio_notify_type type,
 	switch (type) {
 	case VFIO_IOMMU_NOTIFY:
 		ret = vfio_register_iommu_notifier(group, events, nb);
+		dev_info(dev, "vfio_register_notifier[2]: group %d, events %lx\n",
+			 iommu_group_id(group->iommu_group), *events);
 		break;
 	case VFIO_GROUP_NOTIFY:
 		ret = vfio_register_group_notifier(group, events, nb);
@@ -2336,8 +2360,10 @@ int vfio_unregister_notifier(struct device *dev, enum vfio_notify_type type,
 	struct vfio_group *group;
 	int ret;
 
-	if (!dev || !nb)
+	if (!dev || !nb){
 		return -EINVAL;
+	}
+		
 
 	group = vfio_group_get_from_dev(dev);
 	if (!group)
