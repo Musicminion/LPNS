@@ -55,13 +55,13 @@ UUID=$(uuidgen)
 MDEV_DEVICE=/sys/bus/mdev/devices/$UUID
 echo $UUID > $PCI_DEVICE/mdev_supported_types/nvme-2Q_V1/create
 echo n1p5 > $MDEV_DEVICE/namespaces/add_namespace
-echo 8> $MDEV_DEVICE/settings/iothread_cpu
+echo 5 > $MDEV_DEVICE/settings/iothread_cpu
 echo 2 > ${MDEV_DEVICE}/settings/qos
 
 
 
 /usr/local/qemu-7.2.0/bin/qemu-system-x86_64 \
-  -hda /home/zzq/Downloads/LPNS/ubuntu-20.04-server-cloudimg-amd64-01.img \
+  -hda /home/zzq/cloud-images/ubuntu-20.04-server-cloudimg-amd64-01.img \
   -m 4G \
   -smp 4 \
   -M pc \
@@ -73,8 +73,8 @@ echo 2 > ${MDEV_DEVICE}/settings/qos
   -net user,hostfwd=tcp::2222-:22 \
   -vnc :1 \
   -name "MyVM1" \
-  -device vfio-pci,sysfsdev=/sys/bus/mdev/devices/a073b771-affe-4d9a-a096-5fa24bbc5cfb \
-  -drive file=/home/zzq/Downloads/LPNS/seed.img,format=raw,if=virtio
+  -device vfio-pci,sysfsdev=/sys/bus/mdev/devices/264c35c8-7ad5-42bc-9921-b18f688f0228 \
+  -drive file=/home/zzq/cloud-images/seed.img,format=raw,if=virtio
 
 
 # 

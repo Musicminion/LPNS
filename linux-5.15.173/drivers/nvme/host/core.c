@@ -112,6 +112,7 @@ static DEFINE_IDA(nvme_ns_chr_minor_ida);
 static dev_t nvme_ns_chr_devt;
 static struct class *nvme_ns_chr_class;
 
+static void nvme_ns_remove(struct nvme_ns *ns);
 static void nvme_put_subsystem(struct nvme_subsystem *subsys);
 static void nvme_remove_invalid_namespaces(struct nvme_ctrl *ctrl,
 					   unsigned nsid);
@@ -725,7 +726,7 @@ void nvme_put_ns(struct nvme_ns *ns)
 {
 	kref_put(&ns->kref, nvme_free_ns);
 }
-EXPORT_SYMBOL_NS_GPL(nvme_put_ns, NVME_TARGET_PASSTHRU);
+EXPORT_SYMBOL_GPL(nvme_put_ns);
 
 static inline void nvme_clear_nvme_request(struct request *req)
 {
@@ -1281,8 +1282,9 @@ u32 nvme_command_effects(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u8 opcode)
 	} else {
 		if (ctrl->effects)
 			effects = le32_to_cpu(ctrl->effects->acs[opcode]);
-		effects |= nvme_known_admin_effects(opcode);
 	}
+
+	effects |= nvme_known_admin_effects(opcode);
 
 	return effects;
 }
@@ -1305,6 +1307,7 @@ static u32 nvme_passthru_start(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 		nvme_start_freeze(ctrl);
 		nvme_wait_freeze(ctrl);
 	}
+	
 	return effects;
 }
 
@@ -4019,14 +4022,9 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, unsigned nsid,
 	struct nvme_id_ns *id;
 	int node = ctrl->numa_node;
 
-	dev_info(ctrl->device,
-		"Before nvme_alloc_ns Adding namespace %d\n", nsid);
 	if (nvme_identify_ns(ctrl, nsid, ids, &id))
 		return;
 	
-	dev_info(ctrl->device,
-		"After nvme_alloc_ns Adding namespace %d\n", nsid);
-
 	ns = kzalloc_node(sizeof(*ns), GFP_KERNEL, node);
 	if (!ns)
 		goto out_free_id;
@@ -4039,10 +4037,6 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, unsigned nsid,
 
 	ns->disk = disk;
 	ns->queue = disk->queue;
-
-	dev_info(ctrl->device,
-		"Check point %d\n", nsid);
-
 
 	if (ctrl->opts && ctrl->opts->data_digest)
 		blk_queue_flag_set(QUEUE_FLAG_STABLE_WRITES, ns->queue);
@@ -4083,9 +4077,6 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, unsigned nsid,
 	nvme_mpath_add_disk(ns, id);
 	nvme_fault_inject_init(&ns->fault_inject, ns->disk->disk_name);
 	kfree(id);
-
-	dev_info(ctrl->device,
-		"Finally After nvme_alloc_ns Adding namespace %d\n", nsid);
 
 	return;
 
@@ -4158,7 +4149,7 @@ static void nvme_ns_remove_by_nsid(struct nvme_ctrl *ctrl, u32 nsid)
 	struct nvme_ns *ns = nvme_find_get_ns(ctrl, nsid);
 	dev_info(ctrl->device,
 		"[func] After nvme_find_get_ns Removing namespace %d\n", nsid);
-	
+
 	if (ns) {
 		dev_info(ctrl->device,
 			"[func] Before nvme_ns_remove Removing namespace %d\n", nsid);
@@ -4179,18 +4170,11 @@ static void nvme_validate_ns(struct nvme_ns *ns, struct nvme_ns_ids *ids)
 	if (test_bit(NVME_NS_DEAD, &ns->flags))
 		goto out;
 
-	dev_info(ns->ctrl->device,
-		"[before nvme_identify_ns]: validating nsid %d\n", ns->head->ns_id);
 	ret = nvme_identify_ns(ns->ctrl, ns->head->ns_id, ids, &id);
-
-	dev_info(ns->ctrl->device,
-		"[after nvme_identify_ns]: validating nsid %d\n", ns->head->ns_id);
 
 	if (ret)
 		goto out;
 
-	dev_info(ns->ctrl->device,
-		"[after if ret check]: validating nsid %d\n", ns->head->ns_id);
 
 	ret = NVME_SC_INVALID_NS | NVME_SC_DNR;
 	if (!nvme_ns_ids_equal(&ns->head->ids, ids)) {
@@ -4198,7 +4182,6 @@ static void nvme_validate_ns(struct nvme_ns *ns, struct nvme_ns_ids *ids)
 			"identifiers changed for nsid %d\n", ns->head->ns_id);
 		goto out_free_id;
 	}
-
 	ret = nvme_update_ns_info(ns, id);
 
 out_free_id:

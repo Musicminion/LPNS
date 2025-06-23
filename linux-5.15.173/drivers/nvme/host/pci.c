@@ -1873,21 +1873,14 @@ static int nvme_create_io_queues(struct nvme_dev *dev)
 	unsigned i, max, rw_queues;
 	int ret = 0;
 
-	// 打印日志输出
-	dev_info(dev->ctrl.device,
-		"nvme_create_io_queues: %d, dev->ctrl.queue_count = n", dev->ctrl.queue_count);
 	for (i = dev->ctrl.queue_count; i <= dev->max_qid; i++) {
 		if (nvme_alloc_queue(dev, i, dev->q_depth)) {
-			dev_info(dev->ctrl.device, "failed to allocate1 queue %d, will break\n", i);
 			ret = -ENOMEM;
 			break;
 		}
 	}
 
 	max = min(dev->max_qid, dev->ctrl.queue_count - 1);
-
-	//
-	dev_info(dev->ctrl.device, "now max is %d", max);
 
 	// if (max != 1 && dev->io_queues[HCTX_TYPE_POLL]) {
 	if (max != 1) {
@@ -1897,18 +1890,14 @@ static int nvme_create_io_queues(struct nvme_dev *dev)
 		rw_queues = max;
 	}
 
-	dev_info(dev->ctrl.device, "now online queues is %d ", dev->online_queues);
-
+	dev_info(dev->ctrl.device, "[nvme_create_io_queues] now online queues is %d ", dev->online_queues);
 	for (i = dev->online_queues; i <= max; i++) {
 		bool polled = i > rw_queues;
 
 		ret = nvme_create_queue(&dev->queues[i], i, polled);
 		if (ret){
-			dev_info(dev->ctrl.device,
-				"failed to allocate2 queue %d, will break\n", i);
 			break;
 		}
-
 	}
 
 	/*
@@ -2320,27 +2309,26 @@ static int nvme_setup_irqs(struct nvme_dev *dev, unsigned int nr_io_queues)
 		.calc_sets	= nvme_calc_irq_sets,
 		.priv		= dev,
 	};
-	unsigned int irq_queues, poll_queues;
+	unsigned int irq_queues, this_p_queues;
 
 	/*
 	 * Poll queues don't need interrupts, but we need at least one I/O queue
 	 * left over for non-polled I/O.
 	 */
 	// poll_queues = min(dev->nr_poll_queues + mdev_queues, nr_io_queues - 1);
-	poll_queues = dev->nr_poll_queues + mdev_queues;
-
-	if (poll_queues >= nr_io_queues) {
-		poll_queues = nr_io_queues - 1;
+	this_p_queues = dev->nr_poll_queues + mdev_queues;
+	if (this_p_queues >= nr_io_queues) {
+		this_p_queues = nr_io_queues - 1;
 		irq_queues = 1;
 	} else {
-		irq_queues = nr_io_queues - poll_queues + 1;
+		irq_queues = nr_io_queues - this_p_queues + 1;
 	}
 
-	if (mdev_queues > poll_queues) {
-		mdev_queues = poll_queues;
-		poll_queues = 0;
+	if (mdev_queues > this_p_queues) {
+		mdev_queues = this_p_queues;
+		this_p_queues = 0;
 	} else {
-		poll_queues -= mdev_queues;
+		this_p_queues -= mdev_queues;
 	}
 
 	dev->io_queues[HCTX_TYPE_POLL] = poll_queues;
@@ -2358,7 +2346,7 @@ static int nvme_setup_irqs(struct nvme_dev *dev, unsigned int nr_io_queues)
 	 * but some Apple controllers require all queues to use the first
 	 * vector.
 	 */
-	// irq_queues = 1;
+	irq_queues = 1;
 	if (!(dev->ctrl.quirks & NVME_QUIRK_SINGLE_VECTOR))
 		irq_queues += (nr_io_queues - poll_queues);
 	return pci_alloc_irq_vectors_affinity(pdev, 1, irq_queues,
@@ -2385,14 +2373,11 @@ static unsigned int nvme_max_io_queues(struct nvme_dev *dev)
 
 static int nvme_setup_io_queues(struct nvme_dev *dev)
 {
-	dev_info(dev->ctrl.device, "[debug] In nvme_setup_io_queues\n");
 	struct nvme_queue *adminq = &dev->queues[0];
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 	unsigned int nr_io_queues;
 	unsigned long size;
 	int result;
-
-	dev_info(dev->ctrl.device, "[debug] point 01 nvme_setup_io_queues\n");
 
 	/*
 	 * Sample the module parameters once at reset time so that we have
@@ -2409,7 +2394,6 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	if (nr_io_queues == 0)
 		return 0;
 
-	dev_info(dev->ctrl.device, "[debug] point 02 nvme_setup_io_queues\n");
 
 	/*
 	 * Free IRQ resources as soon as NVMEQ_ENABLED bit transitions
@@ -2433,10 +2417,8 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 			dev->cmb_use_sqes = false;
 	}
 
-	dev_info(dev->ctrl.device, "[debug] point 03 nvme_setup_io_queues\n");
 
 	do {
-		dev_info(dev->ctrl.device, "[debug] point 04 nvme_setup_io_queues\n");
 		size = db_bar_size(dev, nr_io_queues);
 		result = nvme_remap_bar(dev, size);
 		if (!result)
@@ -2449,8 +2431,6 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	adminq->q_db = dev->dbs;
 
  retry:
-	dev_info(dev->ctrl.device, "[debug] point 05 retry: nvme_setup_io_queues\n");
-
 	/* Deregister the admin queue's interrupt */
 	if (test_and_clear_bit(NVMEQ_ENABLED, &adminq->flags))
 		pci_free_irq(pdev, 0, adminq);
@@ -2461,8 +2441,6 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	 */
 	pci_free_irq_vectors(pdev);
 
-	dev_info(dev->ctrl.device, "[debug] point 06 retry: nvme_setup_io_queues\n");
-
 	result = nvme_setup_irqs(dev, nr_io_queues);
 	if (result <= 0) {
 		result = -EIO;
@@ -2472,16 +2450,9 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	dev->num_vecs = result;
 	result = max(result - 1, 1);
 
-	// 确认了max qid的值太大
+	// 注意：如果这里 max qid的值太大可能导致一直在重新创建队列
 	dev->max_qid = result + dev->io_queues[HCTX_TYPE_POLL] + dev->mdev_queues;
 
-	dev_info(dev->ctrl.device, "[debug] point 07 retry: nvme_setup_io_queues\n");
-	// print all queueues num
-	dev_info(dev->ctrl.device, "[debug] point 07.1 retry: nvme_setup_io_queues, result = %d", result);
-	dev_info(dev->ctrl.device, "[debug] point 07.2 retry: nvme_setup_io_queues,dev->io_queues[HCTX_TYPE_POLL] = %d", dev->io_queues[HCTX_TYPE_POLL]);
-	dev_info(dev->ctrl.device, "[debug] point 07.3 retry: nvme_setup_io_queues,dev->mdev_queues = %d", dev->mdev_queues);
-
-	
 	/*
 	 * Should investigate if there's a performance win from allocating
 	 * more queues than interrupt vectors; it might allow the submission
@@ -2494,17 +2465,9 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	set_bit(NVMEQ_ENABLED, &adminq->flags);
 	mutex_unlock(&dev->shutdown_lock);
 
-	dev_info(dev->ctrl.device, "[debug] point 08 retry: nvme_setup_io_queues\n");
-
 	result = nvme_create_io_queues(dev);
 	if (result || dev->online_queues < 2)
 		return result;
-
-	dev_info(dev->ctrl.device, "[debug] point 09 retry: nvme_setup_io_queues\n");
-
-	// online_queues的数量是
-	dev_info(dev->ctrl.device, "[debug] point 09.1 retry: nvme_setup_io_queues, online_queues = %d\n", dev->online_queues);
-	dev_info(dev->ctrl.device, "[debug] point 09.2 retry: nvme_setup_io_queues, max_qid = %d\n", dev->max_qid);
 
 	if (dev->online_queues - 1 < dev->max_qid) {
 
@@ -2528,7 +2491,6 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 					dev->mdev_queues);
 	return 0;
 out_unlock:
-	dev_info(dev->ctrl.device, "[debug] point 10 out_unlock: nvme_setup_io_queues\n");
 	mutex_unlock(&dev->shutdown_lock);
 	return result;
 }
@@ -3418,6 +3380,7 @@ static const struct nvme_ctrl_ops nvme_pci_ctrl_ops = {
 				  NVME_F_PCI_P2PDMA |
 				  NVME_F_MDEV_SUPPORTED |
 				  NVME_F_MDEV_DMA_SUPPORTED,
+
 	.reg_read32		= nvme_pci_reg_read32,
 	.reg_write32		= nvme_pci_reg_write32,
 	.reg_read64		= nvme_pci_reg_read64,
